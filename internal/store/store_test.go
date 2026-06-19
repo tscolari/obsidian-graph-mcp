@@ -22,9 +22,8 @@ func newTestStore(t *testing.T) *Store {
 
 // seed builds a small fixed graph and returns the note ids by title.
 //
-//	Alpha -> Beta, Gamma, Missing(unresolved)
-//	Beta  -> Alpha, Gamma
-//	Gamma -> Delta
+//	body links:   Alpha -> Beta, Gamma, Missing(unresolved); Beta -> Alpha, Gamma; Gamma -> Delta
+//	origin chain: Gamma =origin=> Beta =origin=> Alpha =origin=> Missing(unresolved)
 //	tags: topic on Alpha and Delta
 func seed(t *testing.T, st *Store) map[string]int64 {
 	t.Helper()
@@ -37,13 +36,13 @@ func seed(t *testing.T, st *Store) map[string]int64 {
 		}
 		ids[title] = id
 	}
-	links := map[string][]string{
-		"Alpha": {"Beta", "Gamma", "Missing"},
-		"Beta":  {"Alpha", "Gamma"},
-		"Gamma": {"Delta"},
+	links := map[string][]LinkInput{
+		"Alpha": {{Target: "Beta"}, {Target: "Gamma"}, {Target: "Missing"}, {Target: "Missing", Rel: "origin"}},
+		"Beta":  {{Target: "Alpha"}, {Target: "Gamma"}, {Target: "Alpha", Rel: "origin"}},
+		"Gamma": {{Target: "Delta"}, {Target: "Beta", Rel: "origin"}},
 	}
-	for src, targets := range links {
-		if err := st.ReplaceLinks(ctx, ids[src], targets); err != nil {
+	for src, in := range links {
+		if err := st.ReplaceLinks(ctx, ids[src], in); err != nil {
 			t.Fatalf("links %s: %v", src, err)
 		}
 	}
@@ -67,6 +66,18 @@ func titles(refs []Ref) []string {
 	return out
 }
 
+// bodyTitles returns only the titles reached by a body link (rel ""), sorted.
+func bodyTitles(refs []Ref) []string {
+	var out []string
+	for _, r := range refs {
+		if r.Rel == "" {
+			out = append(out, r.Title)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
 func eq(a, b []string) bool {
 	if len(a) != len(b) {
 		return false
@@ -77,6 +88,51 @@ func eq(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+func TestApplySchema_MigratesV1Links(t *testing.T) {
+	ctx := context.Background()
+	st := newTestStore(t) // already at current schema; simulate a v1 links table
+	if _, err := st.db.ExecContext(ctx, `
+		DROP TABLE links;
+		CREATE TABLE links (
+		  src_id INTEGER NOT NULL, dst_id INTEGER, dst_target TEXT NOT NULL,
+		  PRIMARY KEY (src_id, dst_target)
+		);
+		PRAGMA user_version = 0;`); err != nil {
+		t.Fatal(err)
+	}
+	// Seed a note + an old-style (rel-less) link and a stale hash.
+	id, _, err := st.UpsertNote(ctx, "n.md", "N", "body", "stalehash", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.db.ExecContext(ctx, `INSERT INTO links(src_id, dst_target) VALUES (?, 'X')`, id); err != nil {
+		t.Fatal(err)
+	}
+
+	// Re-applying the schema must detect the rel-less table and rebuild it.
+	if err := st.ApplySchema(ctx); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	var nLinks int
+	if err := st.db.QueryRowContext(ctx, `SELECT count(*) FROM links`).Scan(&nLinks); err != nil {
+		t.Fatal(err)
+	}
+	if nLinks != 0 {
+		t.Errorf("links not dropped on migration: %d rows", nLinks)
+	}
+	var hash string
+	if err := st.db.QueryRowContext(ctx, `SELECT hash FROM notes WHERE id=?`, id).Scan(&hash); err != nil {
+		t.Fatal(err)
+	}
+	if hash != "" {
+		t.Errorf("note hash not cleared on migration: %q (would skip re-index)", hash)
+	}
+	// New rel column is usable.
+	if err := st.ReplaceLinks(ctx, id, []LinkInput{{Target: "X", Rel: "origin"}}); err != nil {
+		t.Errorf("rel column unusable after migration: %v", err)
+	}
 }
 
 func TestUpsertNote_ChangedFlag(t *testing.T) {
@@ -117,22 +173,31 @@ func TestResolveLinks(t *testing.T) {
 	st := newTestStore(t)
 	seed(t, st)
 
-	// Case-insensitive title match: Beta's outlink to "Gamma" resolves.
+	// Case-insensitive title match: Beta's body outlinks to "Alpha"/"Gamma" resolve.
 	out, _, err := st.Links(ctx, "beta") // also exercises case-insensitive lookup
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := titles(out); !eq(got, []string{"Alpha", "Gamma"}) {
-		t.Errorf("resolved outlinks = %v, want [Alpha Gamma]", got)
+	if got := bodyTitles(out); !eq(got, []string{"Alpha", "Gamma"}) {
+		t.Errorf("resolved body outlinks = %v, want [Alpha Gamma]", got)
 	}
 
-	// "Missing" has no matching note, so it stays unresolved → dangling.
+	// "Missing" has no matching note, so it stays unresolved → dangling. Alpha
+	// links to it both in body ("") and via origin, so both edges are reported
+	// with their rel.
 	d, err := st.Dangling(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(d) != 1 || d[0].From != "Alpha" || d[0].Target != "Missing" {
-		t.Errorf("dangling = %v, want [{Alpha Missing}]", d)
+	rels := map[string]bool{}
+	for _, dl := range d {
+		if dl.From != "Alpha" || dl.Target != "Missing" {
+			t.Errorf("unexpected dangling: %+v", dl)
+		}
+		rels[dl.Rel] = true
+	}
+	if len(d) != 2 || !rels[""] || !rels["origin"] {
+		t.Errorf("dangling = %+v, want body + origin edges to Missing", d)
 	}
 }
 
@@ -149,7 +214,7 @@ func TestNeighborhood(t *testing.T) {
 		return m
 	}
 
-	d1, err := st.Neighborhood(ctx, "Alpha", 1)
+	d1, err := st.Neighborhood(ctx, "Alpha", 1, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -183,11 +248,90 @@ func TestNeighborhood(t *testing.T) {
 
 func mustNbh(t *testing.T, st *Store, start string, depth int) []Neighbor {
 	t.Helper()
-	ns, err := st.Neighborhood(context.Background(), start, depth)
+	ns, err := st.Neighborhood(context.Background(), start, depth, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return ns
+}
+
+func TestNeighborhood_RelFilter(t *testing.T) {
+	ctx := context.Background()
+	st := newTestStore(t)
+	seed(t, st)
+
+	// Following only origin edges from Gamma: Gamma -> Beta -> Alpha (directed
+	// origin edges, but neighbourhood is undirected so this is the reachable set).
+	ns, err := st.Neighborhood(ctx, "Gamma", 3, []string{"origin"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]int{}
+	for _, n := range ns {
+		got[n.Title] = n.Depth
+	}
+	if got["Gamma"] != 0 || got["Beta"] != 1 || got["Alpha"] != 2 {
+		t.Errorf("origin-only neighbourhood = %v, want Gamma0 Beta1 Alpha2", got)
+	}
+	// Delta is reachable from Gamma only by a body edge, so it must be excluded.
+	if _, ok := got["Delta"]; ok {
+		t.Errorf("Delta leaked into origin-only neighbourhood: %v", got)
+	}
+}
+
+func TestOriginChain(t *testing.T) {
+	ctx := context.Background()
+	st := newTestStore(t)
+	seed(t, st)
+
+	// Gamma =origin=> Beta =origin=> Alpha =origin=> Missing(unresolved, stops).
+	chain, err := st.OriginChain(ctx, "Gamma", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var order []string
+	for i, n := range chain {
+		if n.Depth != i {
+			t.Errorf("chain[%d] depth = %d, want %d", i, n.Depth, i)
+		}
+		order = append(order, n.Title)
+	}
+	if !eq(order, []string{"Gamma", "Beta", "Alpha"}) {
+		t.Errorf("origin chain = %v, want [Gamma Beta Alpha] (stops at unresolved Missing)", order)
+	}
+
+	// Depth bound truncates the walk.
+	short, err := st.OriginChain(ctx, "Gamma", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(short) != 2 || short[1].Title != "Beta" {
+		t.Errorf("depth-1 chain = %v, want [Gamma Beta]", short)
+	}
+}
+
+func TestLinks_CarriesRel(t *testing.T) {
+	ctx := context.Background()
+	st := newTestStore(t)
+	seed(t, st)
+
+	out, _, err := st.Links(ctx, "Beta")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Beta -> Alpha exists as both a body edge and an origin edge.
+	var bodyAlpha, originAlpha bool
+	for _, r := range out {
+		if r.Title == "Alpha" && r.Rel == "" {
+			bodyAlpha = true
+		}
+		if r.Title == "Alpha" && r.Rel == "origin" {
+			originAlpha = true
+		}
+	}
+	if !bodyAlpha || !originAlpha {
+		t.Errorf("Beta outlinks missing typed rels: %+v", out)
+	}
 }
 
 func TestLinks_Directionality(t *testing.T) {
@@ -199,11 +343,11 @@ func TestLinks_Directionality(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := titles(out); !eq(got, []string{"Alpha", "Gamma"}) {
-		t.Errorf("Beta outlinks = %v, want [Alpha Gamma]", got)
+	if got := bodyTitles(out); !eq(got, []string{"Alpha", "Gamma"}) {
+		t.Errorf("Beta body outlinks = %v, want [Alpha Gamma]", got)
 	}
-	if got := titles(back); !eq(got, []string{"Alpha"}) {
-		t.Errorf("Beta backlinks = %v, want [Alpha]", got)
+	if got := bodyTitles(back); !eq(got, []string{"Alpha"}) {
+		t.Errorf("Beta body backlinks = %v, want [Alpha]", got)
 	}
 }
 

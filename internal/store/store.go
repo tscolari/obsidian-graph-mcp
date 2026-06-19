@@ -7,6 +7,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 
 	_ "modernc.org/sqlite" // pure-Go driver, no cgo
 )
@@ -27,9 +28,11 @@ CREATE TABLE IF NOT EXISTS links (
   src_id     INTEGER NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
   dst_id     INTEGER          REFERENCES notes(id) ON DELETE SET NULL, -- NULL = unresolved
   dst_target TEXT NOT NULL,
-  PRIMARY KEY (src_id, dst_target)
+  rel        TEXT NOT NULL DEFAULT '', -- edge type: '' = body link, else frontmatter property
+  PRIMARY KEY (src_id, dst_target, rel)
 );
 CREATE INDEX IF NOT EXISTS idx_links_dst ON links(dst_id);
+CREATE INDEX IF NOT EXISTS idx_links_rel ON links(rel);
 
 CREATE TABLE IF NOT EXISTS tags (
   note_id INTEGER NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
@@ -54,9 +57,56 @@ func Open(path string) (*Store, error) {
 
 func (s *Store) Close() error { return s.db.Close() }
 
+// schemaVersion bumps whenever the on-disk shape changes. The DB is a cache
+// rebuildable from the vault, so an older version is migrated by dropping the
+// affected table and letting the next index repopulate it.
+const schemaVersion = 2
+
 func (s *Store) ApplySchema(ctx context.Context) error {
-	_, err := s.db.ExecContext(ctx, schema)
+	// v1 (which never set user_version, so it reads as 0) had a links table
+	// without the rel column / composite PK. Detect it by the missing column
+	// rather than the version, then drop it and clear note hashes so the next
+	// index treats every note as changed and rewrites its edges (UpsertNote
+	// otherwise skips unchanged notes).
+	stale, err := s.linksTableStale(ctx)
+	if err != nil {
+		return err
+	}
+	if stale {
+		if _, err := s.db.ExecContext(ctx, `DROP TABLE IF EXISTS links; UPDATE notes SET hash = '';`); err != nil {
+			return err
+		}
+	}
+	if _, err := s.db.ExecContext(ctx, schema); err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx, fmt.Sprintf(`PRAGMA user_version = %d`, schemaVersion))
 	return err
+}
+
+// linksTableStale reports whether a links table exists but predates the rel
+// column (a v1 cache that must be rebuilt).
+func (s *Store) linksTableStale(ctx context.Context) (bool, error) {
+	rows, err := s.db.QueryContext(ctx, `PRAGMA table_info(links)`)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	exists, hasRel := false, false
+	for rows.Next() {
+		var cid int
+		var name, typ string
+		var notnull, pk int
+		var dflt any
+		if err := rows.Scan(&cid, &name, &typ, &notnull, &dflt, &pk); err != nil {
+			return false, err
+		}
+		exists = true
+		if name == "rel" {
+			hasRel = true
+		}
+	}
+	return exists && !hasRel, rows.Err()
 }
 
 // UpsertNote writes the note row and reports whether content actually changed.
@@ -81,9 +131,16 @@ func (s *Store) UpsertNote(ctx context.Context, path, title, content, hash strin
 	return id, true, err
 }
 
+// LinkInput is one outgoing edge to write: a target plus its relation type
+// ("" for a body link, else the frontmatter property name).
+type LinkInput struct {
+	Target string
+	Rel    string
+}
+
 // ReplaceLinks rewrites all outgoing edges for a note (targets unresolved here;
 // call ResolveLinks afterwards to populate dst_id).
-func (s *Store) ReplaceLinks(ctx context.Context, srcID int64, targets []string) error {
+func (s *Store) ReplaceLinks(ctx context.Context, srcID int64, links []LinkInput) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -92,8 +149,8 @@ func (s *Store) ReplaceLinks(ctx context.Context, srcID int64, targets []string)
 	if _, err = tx.ExecContext(ctx, `DELETE FROM links WHERE src_id = ?`, srcID); err != nil {
 		return err
 	}
-	for _, t := range targets {
-		if _, err = tx.ExecContext(ctx, `INSERT OR IGNORE INTO links (src_id, dst_target) VALUES (?, ?)`, srcID, t); err != nil {
+	for _, l := range links {
+		if _, err = tx.ExecContext(ctx, `INSERT OR IGNORE INTO links (src_id, dst_target, rel) VALUES (?, ?, ?)`, srcID, l.Target, l.Rel); err != nil {
 			return err
 		}
 	}
@@ -130,6 +187,7 @@ func (s *Store) ResolveLinks(ctx context.Context) error {
 type Ref struct {
 	Title string `json:"title"`
 	Path  string `json:"path"`
+	Rel   string `json:"rel,omitempty"` // edge type, when the query carries one
 }
 
 type Hit struct {
@@ -170,19 +228,38 @@ func (s *Store) ReadNote(ctx context.Context, ref string) (title, path, content 
 	return
 }
 
-// Links returns directed outlinks and backlinks for a note title.
+// Links returns directed outlinks and backlinks for a note title. Each Ref
+// carries the relation (rel) of the edge: "" for body links, else the
+// frontmatter property name (e.g. "origin", "references").
 func (s *Store) Links(ctx context.Context, title string) (out, back []Ref, err error) {
-	if out, err = s.queryRefs(ctx, `
-		SELECT n.title, n.path FROM links l
+	if out, err = s.queryRefsRel(ctx, `
+		SELECT n.title, n.path, l.rel FROM links l
 		JOIN notes s ON s.id = l.src_id JOIN notes n ON n.id = l.dst_id
-		WHERE lower(s.title) = lower(?) ORDER BY n.title`, title); err != nil {
+		WHERE lower(s.title) = lower(?) ORDER BY l.rel, n.title`, title); err != nil {
 		return
 	}
-	back, err = s.queryRefs(ctx, `
-		SELECT n.title, n.path FROM links l
+	back, err = s.queryRefsRel(ctx, `
+		SELECT n.title, n.path, l.rel FROM links l
 		JOIN notes d ON d.id = l.dst_id JOIN notes n ON n.id = l.src_id
-		WHERE lower(d.title) = lower(?) ORDER BY n.title`, title)
+		WHERE lower(d.title) = lower(?) ORDER BY l.rel, n.title`, title)
 	return
+}
+
+func (s *Store) queryRefsRel(ctx context.Context, q string, args ...any) ([]Ref, error) {
+	rows, err := s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Ref
+	for rows.Next() {
+		var r Ref
+		if err := rows.Scan(&r.Title, &r.Path, &r.Rel); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
 }
 
 type Neighbor struct {
@@ -194,9 +271,20 @@ type Neighbor struct {
 // Neighborhood returns the undirected n-hop neighbourhood of a note: edges are
 // followed in both directions (outlinks + backlinks), bounded by maxDepth, with
 // each node reported at its shortest depth. This is the curated-graph payoff —
-// "what's related to X within 2 hops" without any embeddings.
-func (s *Store) Neighborhood(ctx context.Context, start string, maxDepth int) ([]Neighbor, error) {
-	const q = `
+// "what's related to X within 2 hops" without any embeddings. When rels is
+// non-empty, only edges with those relation types are traversed (e.g. ["origin",
+// "references"] to walk only curated frontmatter links, ignoring body mentions).
+func (s *Store) Neighborhood(ctx context.Context, start string, maxDepth int, rels []string) ([]Neighbor, error) {
+	relFilter, args := "", []any{start, maxDepth}
+	if len(rels) > 0 {
+		ph := make([]string, len(rels))
+		for i, r := range rels {
+			ph[i] = "?"
+			args = append(args, r)
+		}
+		relFilter = " AND l.rel IN (" + strings.Join(ph, ",") + ")"
+	}
+	q := `
 WITH RECURSIVE
   seed(id) AS (SELECT id FROM notes WHERE lower(title) = lower(?)),
   nbh(id, depth) AS (
@@ -205,11 +293,44 @@ WITH RECURSIVE
     SELECT CASE WHEN l.src_id = nbh.id THEN l.dst_id ELSE l.src_id END, nbh.depth + 1
     FROM nbh JOIN links l ON (l.src_id = nbh.id OR l.dst_id = nbh.id)
     WHERE nbh.depth < ?
-      AND (CASE WHEN l.src_id = nbh.id THEN l.dst_id ELSE l.src_id END) IS NOT NULL
+      AND (CASE WHEN l.src_id = nbh.id THEN l.dst_id ELSE l.src_id END) IS NOT NULL` + relFilter + `
   )
 SELECT n.title, n.path, MIN(nbh.depth) AS depth
 FROM nbh JOIN notes n ON n.id = nbh.id
 GROUP BY n.id ORDER BY depth, n.title;`
+	rows, err := s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Neighbor
+	for rows.Next() {
+		var n Neighbor
+		if err := rows.Scan(&n.Title, &n.Path, &n.Depth); err != nil {
+			return nil, err
+		}
+		out = append(out, n)
+	}
+	return out, rows.Err()
+}
+
+// OriginChain follows a note's Origin frontmatter link directionally to its root
+// — the provenance/genealogy trace of why the note exists. It walks src→dst over
+// rel='origin' edges only, bounded by maxDepth, cycle-safe, stopping at an
+// unresolved Origin. The start note is depth 0; its Origin is depth 1, etc.
+func (s *Store) OriginChain(ctx context.Context, start string, maxDepth int) ([]Neighbor, error) {
+	const q = `
+WITH RECURSIVE
+  chain(id, depth) AS (
+    SELECT id, 0 FROM notes WHERE lower(title) = lower(?)
+    UNION
+    SELECT l.dst_id, chain.depth + 1
+    FROM chain JOIN links l ON l.src_id = chain.id AND l.rel = 'origin'
+    WHERE chain.depth < ? AND l.dst_id IS NOT NULL
+  )
+SELECT n.title, n.path, chain.depth
+FROM chain JOIN notes n ON n.id = chain.id
+ORDER BY chain.depth;`
 	rows, err := s.db.QueryContext(ctx, q, start, maxDepth)
 	if err != nil {
 		return nil, err
@@ -235,12 +356,13 @@ func (s *Store) NotesByTag(ctx context.Context, tag string) ([]Ref, error) {
 type Dangling struct {
 	From   string `json:"from"`
 	Target string `json:"target"`
+	Rel    string `json:"rel,omitempty"` // edge type: "" body, else frontmatter property
 }
 
 func (s *Store) Dangling(ctx context.Context) ([]Dangling, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT s.title, l.dst_target FROM links l JOIN notes s ON s.id = l.src_id
-		WHERE l.dst_id IS NULL ORDER BY s.title`)
+		SELECT s.title, l.dst_target, l.rel FROM links l JOIN notes s ON s.id = l.src_id
+		WHERE l.dst_id IS NULL ORDER BY s.title, l.rel`)
 	if err != nil {
 		return nil, err
 	}
@@ -248,7 +370,7 @@ func (s *Store) Dangling(ctx context.Context) ([]Dangling, error) {
 	var out []Dangling
 	for rows.Next() {
 		var d Dangling
-		if err := rows.Scan(&d.From, &d.Target); err != nil {
+		if err := rows.Scan(&d.From, &d.Target, &d.Rel); err != nil {
 			return nil, err
 		}
 		out = append(out, d)

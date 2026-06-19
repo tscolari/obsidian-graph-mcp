@@ -38,8 +38,13 @@ func New(st *store.Store) *mcp.Server {
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "neighborhood",
-		Description: "Return the curated link-graph neighbourhood of a note within N hops (links followed in both directions). The primary way to gather correlated context.",
+		Description: "Return the curated link-graph neighbourhood of a note within N hops (links followed in both directions). The primary way to gather correlated context. Optionally restrict to relation types (e.g. origin, references) to follow only curated frontmatter links.",
 	}, h.neighborhood)
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "origin_chain",
+		Description: "Follow a note's Origin frontmatter link directionally to its root — the provenance/genealogy trace of why the note exists. Returns the ordered chain from the note up to its origin root.",
+	}, h.originChain)
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "notes_by_tag",
@@ -106,12 +111,35 @@ func (h *handlers) links(ctx context.Context, _ *mcp.CallToolRequest, in titleIn
 	if err != nil {
 		return nil, linksOut{}, err
 	}
-	return text(fmt.Sprintf("%d outlinks, %d backlinks", len(out), len(back))), linksOut{Outlinks: out, Backlinks: back}, nil
+	var b strings.Builder
+	b.WriteString("outlinks:\n")
+	writeRefsByRel(&b, out)
+	b.WriteString("backlinks:\n")
+	writeRefsByRel(&b, back)
+	return text(b.String()), linksOut{Outlinks: out, Backlinks: back}, nil
+}
+
+// writeRefsByRel renders refs grouped by relation; "" (body links) is labelled
+// "body". Refs are already ordered by rel then title.
+func writeRefsByRel(b *strings.Builder, refs []store.Ref) {
+	last := "\x00"
+	for _, r := range refs {
+		if r.Rel != last {
+			last = r.Rel
+			label := r.Rel
+			if label == "" {
+				label = "body"
+			}
+			fmt.Fprintf(b, "  [%s]\n", label)
+		}
+		fmt.Fprintf(b, "    %s\n", r.Title)
+	}
 }
 
 type neighborhoodIn struct {
-	Title string `json:"title" jsonschema:"note to start from"`
-	Depth int    `json:"depth,omitempty" jsonschema:"max hops, default 2"`
+	Title string   `json:"title" jsonschema:"note to start from"`
+	Depth int      `json:"depth,omitempty" jsonschema:"max hops, default 2"`
+	Rels  []string `json:"rels,omitempty" jsonschema:"restrict to these relation types (e.g. origin, references); empty = all edges"`
 }
 type neighborhoodOut struct {
 	Nodes []store.Neighbor `json:"nodes"`
@@ -122,7 +150,7 @@ func (h *handlers) neighborhood(ctx context.Context, _ *mcp.CallToolRequest, in 
 	if depth <= 0 {
 		depth = 2
 	}
-	nodes, err := h.st.Neighborhood(ctx, in.Title, depth)
+	nodes, err := h.st.Neighborhood(ctx, in.Title, depth, in.Rels)
 	if err != nil {
 		return nil, neighborhoodOut{}, err
 	}
@@ -131,6 +159,33 @@ func (h *handlers) neighborhood(ctx context.Context, _ *mcp.CallToolRequest, in 
 		fmt.Fprintf(&b, "%s%s\n", strings.Repeat("  ", n.Depth), n.Title)
 	}
 	return text(b.String()), neighborhoodOut{Nodes: nodes}, nil
+}
+
+type originChainIn struct {
+	Title string `json:"title" jsonschema:"note to trace Origin from"`
+	Depth int    `json:"depth,omitempty" jsonschema:"max Origin hops, default 10"`
+}
+type originChainOut struct {
+	Chain []store.Neighbor `json:"chain"`
+}
+
+func (h *handlers) originChain(ctx context.Context, _ *mcp.CallToolRequest, in originChainIn) (*mcp.CallToolResult, originChainOut, error) {
+	depth := in.Depth
+	if depth <= 0 {
+		depth = 10
+	}
+	chain, err := h.st.OriginChain(ctx, in.Title, depth)
+	if err != nil {
+		return nil, originChainOut{}, err
+	}
+	var b strings.Builder
+	for i, n := range chain {
+		if i > 0 {
+			b.WriteString(" → ")
+		}
+		b.WriteString(n.Title)
+	}
+	return text(b.String()), originChainOut{Chain: chain}, nil
 }
 
 type tagIn struct {

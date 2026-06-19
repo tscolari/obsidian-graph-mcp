@@ -25,6 +25,28 @@ func sorted(s []string) []string {
 	return out
 }
 
+// bodyTargets returns the targets of body links (rel == "").
+func bodyTargets(links []Link) []string {
+	var out []string
+	for _, l := range links {
+		if l.Rel == "" {
+			out = append(out, l.Target)
+		}
+	}
+	return out
+}
+
+// relTargets returns the targets carrying the given relation.
+func relTargets(links []Link, rel string) []string {
+	var out []string
+	for _, l := range links {
+		if l.Rel == rel {
+			out = append(out, l.Target)
+		}
+	}
+	return out
+}
+
 func TestParseNote_Links(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -42,7 +64,7 @@ func TestParseNote_Links(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := ParseNote("Stem", tt.content).Links
+			got := bodyTargets(ParseNote("Stem", tt.content).Links)
 			if len(got) != len(tt.want) {
 				t.Fatalf("links = %v, want %v", got, tt.want)
 			}
@@ -57,7 +79,7 @@ func TestParseNote_StripsCode(t *testing.T) {
 	content := "real [[Beta]]\n" +
 		"inline `[[NotALink]]` ignored\n" +
 		"```\n[[Nope]] in fence\n```\n"
-	got := ParseNote("Stem", content).Links
+	got := bodyTargets(ParseNote("Stem", content).Links)
 	if !containsAll(got, "Beta") {
 		t.Fatalf("expected Beta in %v", got)
 	}
@@ -72,10 +94,61 @@ func TestParseNote_StripsCode(t *testing.T) {
 }
 
 func TestParseNote_DedupLinks(t *testing.T) {
-	got := ParseNote("Stem", "[[Beta]] then [[Beta]] again").Links
+	got := bodyTargets(ParseNote("Stem", "[[Beta]] then [[Beta]] again").Links)
 	if len(got) != 1 || got[0] != "Beta" {
 		t.Fatalf("want single Beta, got %v", got)
 	}
+}
+
+func TestParseNote_FrontmatterLinks(t *testing.T) {
+	content := "---\n" +
+		"Origin: \"[[Career Matrix]]\"\n" +
+		"References:\n" +
+		"  - \"[[PCI]]\"\n" +
+		"  - PLAT-2784\n" +
+		"  - \"[[HCBV2-3786]]\"\n" +
+		"Created At: '[[<% tp.date.now(\"YYYY-MM-DD\") %>]]'\n" +
+		"Month: \"[[{{date:YYYY-MM}}]]\"\n" +
+		"tags:\n" +
+		"  - \"#code\"\n" +
+		"---\n" +
+		"body links to [[Beta]] and [[Career Matrix]]\n"
+	links := ParseNote("Stem", content).Links
+
+	if got := relTargets(links, "origin"); !eq2(got, []string{"Career Matrix"}) {
+		t.Errorf("origin = %v, want [Career Matrix]", got)
+	}
+	if got := sorted(relTargets(links, "references")); !eq2(got, []string{"HCBV2-3786", "PCI"}) {
+		t.Errorf("references = %v, want [HCBV2-3786 PCI] (PLAT-2784 dropped)", got)
+	}
+	// Template placeholders in Created At / Month must be skipped entirely.
+	if got := relTargets(links, "created at"); len(got) != 0 {
+		t.Errorf("created at = %v, want none (placeholder skipped)", got)
+	}
+	if got := relTargets(links, "month"); len(got) != 0 {
+		t.Errorf("month = %v, want none (placeholder skipped)", got)
+	}
+	// tags block list carries no [[...]] → no link.
+	if got := relTargets(links, "tags"); len(got) != 0 {
+		t.Errorf("tags = %v, want none", got)
+	}
+	// Body links keep rel "". "Career Matrix" appears both in body and Origin →
+	// two distinct edges (dedup is per (rel, target)).
+	if got := sorted(bodyTargets(links)); !eq2(got, []string{"Beta", "Career Matrix"}) {
+		t.Errorf("body = %v, want [Beta Career Matrix]", got)
+	}
+}
+
+func eq2(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func TestParseNote_FrontmatterTitleOverride(t *testing.T) {

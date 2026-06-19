@@ -60,7 +60,11 @@ func Vault(ctx context.Context, st *store.Store, root string) (Stats, error) {
 			return nil
 		}
 		stats.Changed++
-		if err := st.ReplaceLinks(ctx, id, n.Links); err != nil {
+		links := make([]store.LinkInput, len(n.Links))
+		for i, l := range n.Links {
+			links[i] = store.LinkInput{Target: l.Target, Rel: l.Rel}
+		}
+		if err := st.ReplaceLinks(ctx, id, links); err != nil {
 			return err
 		}
 		return st.ReplaceTags(ctx, id, n.Tags)

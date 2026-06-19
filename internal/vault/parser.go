@@ -19,11 +19,20 @@ var (
 	hashtagRe    = regexp.MustCompile(`(?m)(?:^|\s)#([A-Za-z0-9_][A-Za-z0-9_/-]*)`)
 )
 
+// Link is one wikilink edge out of a note. Rel is the edge type: "" for a body
+// wikilink, or the (lowercased) frontmatter property name for a frontmatter link
+// (e.g. "origin", "references"). Frontmatter links are the hand-curated,
+// typed relations; body links are incidental mentions.
+type Link struct {
+	Target string // basename-normalised link target
+	Rel    string // "" = body link; else frontmatter property name
+}
+
 // Note is the parsed view of a single markdown file.
 type Note struct {
 	Title string   // filename without .md, unless overridden by frontmatter title
 	Tags  []string // frontmatter tags + inline #hashtags, deduped
-	Links []string // raw wikilink targets, basename-normalised, deduped, code stripped
+	Links []Link   // body + frontmatter wikilinks, deduped by (rel, target)
 	Hash  string   // content hash, for incremental indexing
 }
 
@@ -34,19 +43,26 @@ func ParseNote(title, content string) Note {
 	if t := frontmatterScalar(fm, "title"); t != "" {
 		title = t
 	}
-	clean := stripCode(body)
 
-	seen := map[string]struct{}{}
-	var links []string
-	for _, m := range wikilinkRe.FindAllStringSubmatch(clean, -1) {
-		t := basename(m[1])
-		if t == "" {
-			continue
+	seen := map[string]struct{}{} // dedup key: rel + "\x00" + target
+	var links []Link
+	add := func(target, rel string) {
+		if target == "" {
+			return
 		}
-		if _, ok := seen[t]; !ok {
-			seen[t] = struct{}{}
-			links = append(links, t)
+		key := rel + "\x00" + target
+		if _, ok := seen[key]; ok {
+			return
 		}
+		seen[key] = struct{}{}
+		links = append(links, Link{Target: target, Rel: rel})
+	}
+
+	for _, m := range wikilinkRe.FindAllStringSubmatch(stripCode(body), -1) {
+		add(basename(m[1]), "")
+	}
+	for _, l := range frontmatterLinks(fm) {
+		add(l.Target, l.Rel)
 	}
 
 	sum := sha256.Sum256([]byte(content))
@@ -56,6 +72,43 @@ func ParseNote(title, content string) Note {
 		Links: links,
 		Hash:  hex.EncodeToString(sum[:8]),
 	}
+}
+
+// frontmatterLinks extracts every [[wikilink]] from frontmatter property values,
+// tagging each with its property name (lowercased) as the relation. It handles
+// inline scalars (`Origin: "[[X]]"`) and block lists (`References:\n  - "[[A]]"`),
+// takes only [[...]] items (plain scalars like Jira IDs are ignored), and skips
+// template placeholders such as [[<% ... %>]] and [[{{date:...}}]].
+func frontmatterLinks(fm string) []Link {
+	var out []Link
+	var rel string // current property name, lowercased
+	emit := func(s string) {
+		if rel == "" {
+			return
+		}
+		for _, m := range wikilinkRe.FindAllStringSubmatch(s, -1) {
+			raw := m[1]
+			if strings.Contains(raw, "<%") || strings.Contains(raw, "{{") {
+				continue // template placeholder, not a real link
+			}
+			if t := basename(raw); t != "" {
+				out = append(out, Link{Target: t, Rel: rel})
+			}
+		}
+	}
+	for _, ln := range strings.Split(fm, "\n") {
+		if item, ok := strings.CutPrefix(strings.TrimSpace(ln), "- "); ok {
+			emit(item) // block-list item under the current key
+			continue
+		}
+		key, val, ok := strings.Cut(ln, ":")
+		if !ok || key == "" || key[0] == ' ' || key[0] == '\t' {
+			continue // not a top-level key line
+		}
+		rel = strings.ToLower(strings.TrimSpace(key))
+		emit(val) // inline scalar value on the same line
+	}
+	return out
 }
 
 func stripCode(s string) string {
