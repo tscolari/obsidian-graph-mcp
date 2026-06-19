@@ -23,37 +23,37 @@ func New(st *store.Store) *mcp.Server {
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "search_notes",
-		Description: "Full-text-ish search over note titles and bodies. Use to find entry-point notes before traversing the link graph.",
+		Description: "FIRST STOP when a question touches the user's own projects, decisions, people, incidents, or prior work — their knowledge lives in these notes, not in the codebase or your training data. Also use when you hit an internal term, acronym, or project name you can't resolve elsewhere. Returns entry-point notes to traverse from.",
 	}, h.search)
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "read_note",
-		Description: "Read a note's full markdown by title or vault-relative path.",
+		Description: "Read a note's full markdown by title or vault-relative path. Use after search_notes/neighborhood/origin_chain to read the specific notes you decided are relevant.",
 	}, h.read)
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "note_links",
-		Description: "List a note's outgoing wikilinks and its backlinks (notes that link to it).",
+		Description: "Show how a note connects: its outgoing wikilinks and its backlinks, grouped by relation (body / origin / references / …). Use to see what the user deliberately linked to and from a note before deciding what to read next.",
 	}, h.links)
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "neighborhood",
-		Description: "Return the curated link-graph neighbourhood of a note within N hops (links followed in both directions). The primary way to gather correlated context. Optionally restrict to relation types (e.g. origin, references) to follow only curated frontmatter links.",
+		Description: "After finding an entry note, call this to gather the correlated context the user has hand-linked around it, within N hops (links followed in both directions). The primary way to assemble relevant background. Pass rels=[\"origin\",\"references\"] to follow only curated frontmatter relations and ignore incidental body mentions.",
 	}, h.neighborhood)
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "origin_chain",
-		Description: "Follow a note's Origin frontmatter link directionally to its root — the provenance/genealogy trace of why the note exists. Returns the ordered chain from the note up to its origin root.",
+		Description: "Use when asked WHY a note/project/decision exists or WHERE it came from. Follows a note's Origin frontmatter link directionally to its root — the provenance/genealogy trace — returning the ordered chain from the note up to its origin root.",
 	}, h.originChain)
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "notes_by_tag",
-		Description: "List notes carrying a given tag (frontmatter or inline #tag).",
+		Description: "List notes carrying a given tag (frontmatter or inline #tag). Use to find all of the user's notes in a category (e.g. incidents, people, reading) when you don't have a specific entry-point title.",
 	}, h.byTag)
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "dangling_links",
-		Description: "List wikilinks that point at notes which do not exist yet — knowledge gaps.",
+		Description: "List wikilinks that point at notes which don't exist yet — the user's knowledge gaps. The rel shows the relation, so a dangling Origin/References is distinguishable from a passing body mention. Use to spot missing context or surface gaps worth flagging to the user.",
 	}, h.dangling)
 
 	return s

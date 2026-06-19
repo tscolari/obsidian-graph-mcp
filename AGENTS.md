@@ -1,0 +1,49 @@
+# Agent instructions
+
+This file is read by coding agents that support the `AGENTS.md` convention
+(Codex, OpenCode, and others). For Claude Code, symlink `CLAUDE.md` to this file:
+
+```sh
+ln -s AGENTS.md CLAUDE.md
+```
+
+(or add `@AGENTS.md` to an existing `CLAUDE.md`).
+
+To use the protocol below, wire up the `obsidian-graph` MCP server pointed at
+your vault — see the README's "Wire into Claude Desktop / Claude Code" section
+for the config; Codex and OpenCode take the same `command` + `args` under their
+own MCP config.
+
+## Knowledge protocol (obsidian-graph MCP)
+
+The user's Obsidian vault is a hand-curated knowledge graph: notes are nodes and
+`[[wikilinks]]` are edges, with the most deliberate links in frontmatter
+(`Origin`, `References`). Treat it as the user's long-term memory and consult it
+as part of your reasoning — not only when explicitly told.
+
+**Look first whenever the task involves:**
+- the user's own projects, decisions, incidents, teams, or people
+- an internal term, acronym, or project name you can't resolve from the codebase
+  or your own knowledge
+- "why does X exist?", "where did this come from?", "what's related to Y?"
+- writing a doc, ADR, summary, or plan about the user's domain
+
+**Recipe:**
+1. `search_notes` — find the entry-point note(s).
+2. `neighborhood` — gather the context the user hand-linked around it. Prefer
+   `rels=["origin","references"]` to follow curated frontmatter relations and
+   skip incidental body mentions.
+3. `origin_chain` — when the question is about provenance ("why/where from"),
+   trace `Origin` to its root.
+4. `read_note` — read the specific notes you judged relevant.
+5. `notes_by_tag` / `note_links` — when you need a category or a note's exact
+   connections rather than a fuzzy search.
+
+**Then:**
+- Fold what you find into your answer; cite sources by note title, e.g.
+  `[[Career Matrix]]`, so the reasoning is traceable.
+- If `dangling_links` shows the user references a note that doesn't exist
+  (especially a dangling `Origin`/`References`), flag the gap.
+
+The graph is **read-only and cheap** — when in doubt, look first, then reason.
+Scope the lookups to the triggers above; don't search on every turn.
