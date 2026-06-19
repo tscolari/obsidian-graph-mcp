@@ -12,12 +12,18 @@ import (
 	"github.com/tscolari/obsidian-graph-mcp/internal/store"
 )
 
-// New builds a configured MCP server backed by st.
-func New(st *store.Store) *mcp.Server {
+// New builds a configured MCP server backed by st. name namespaces the tools
+// (distinguishing one vault's instance from another when several run at once);
+// vaultContext is a one-line description of what the vault holds, advertised to
+// clients as server instructions so the agent can route to the right vault.
+func New(st *store.Store, name, vaultContext string) *mcp.Server {
+	if name == "" {
+		name = "obsidian-graph"
+	}
 	s := mcp.NewServer(&mcp.Implementation{
-		Name:    "obsidian-graph",
+		Name:    name,
 		Version: "0.1.0",
-	}, nil)
+	}, &mcp.ServerOptions{Instructions: vaultContext})
 
 	h := &handlers{st: st}
 

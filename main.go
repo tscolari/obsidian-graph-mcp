@@ -9,6 +9,7 @@ import (
 	"flag"
 	"log"
 	"os"
+	"path/filepath"
 
 	"github.com/tscolari/obsidian-graph-mcp/internal/index"
 	"github.com/tscolari/obsidian-graph-mcp/internal/mcpserver"
@@ -21,10 +22,15 @@ func main() {
 	vaultDir := flag.String("vault", ".", "path to the Obsidian vault")
 	dbPath := flag.String("db", "", "SQLite path (default: <vault>/.graph.db)")
 	indexOnly := flag.Bool("index-only", false, "index then exit, do not serve")
+	name := flag.String("name", "", "MCP server name for this vault, used to namespace tools when running multiple instances (default: obsidian-graph-<vault folder>)")
+	vaultContext := flag.String("context", "", "one-line description of what this vault holds, advertised to the agent (e.g. \"HashiCorp work notes: incidents, projects, people\")")
 	flag.Parse()
 
 	if *dbPath == "" {
 		*dbPath = *vaultDir + "/.graph.db"
+	}
+	if *name == "" {
+		*name = "obsidian-graph-" + filepath.Base(filepath.Clean(*vaultDir))
 	}
 
 	// MCP speaks JSON-RPC on stdout, so all logging must go to stderr.
@@ -51,7 +57,7 @@ func main() {
 		return
 	}
 
-	srv := mcpserver.New(st)
+	srv := mcpserver.New(st, *name, *vaultContext)
 	if err := srv.Run(ctx, &mcp.StdioTransport{}); err != nil {
 		log.Fatalf("serve: %v", err)
 	}

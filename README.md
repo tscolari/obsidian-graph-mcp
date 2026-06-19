@@ -53,6 +53,35 @@ go build -o obsidian-graph-mcp .
 }
 ```
 
+### Multiple vaults
+
+Run one instance per vault. Give each a distinct `-name` (so the agent sees its
+tools namespaced as `mcp__<name>__search_notes` and can tell vaults apart) and a
+`-context` blurb (advertised to clients as server instructions). `-name` defaults
+to `obsidian-graph-<vault folder>`.
+
+```json
+{
+  "mcpServers": {
+    "obsidian-work": {
+      "command": "/abs/path/obsidian-graph-mcp",
+      "args": ["-vault", "/abs/path/work-vault",
+               "-name", "obsidian-work",
+               "-context", "Current job: incidents, projects, people, decisions"]
+    },
+    "obsidian-personal": {
+      "command": "/abs/path/obsidian-graph-mcp",
+      "args": ["-vault", "/abs/path/personal-vault",
+               "-name", "obsidian-personal",
+               "-context", "Personal life: reading lists, journaling, notes"]
+    }
+  }
+}
+```
+
+Then keep the routing table in `AGENTS.md` in sync so the agent picks the right
+vault per question.
+
 ## Tools exposed
 
 | tool | purpose |

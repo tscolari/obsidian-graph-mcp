@@ -14,6 +14,19 @@ your vault — see the README's "Wire into Claude Desktop / Claude Code" section
 for the config; Codex and OpenCode take the same `command` + `args` under their
 own MCP config.
 
+## Multiple vaults
+
+When several vaults run at once, give each instance a distinct `-name` so its
+tools are namespaced separately (`mcp__<name>__search_notes`), and a `-context`
+blurb describing what it holds. Then keep this routing table current and pick the
+vault whose context matches the question's domain — consult more than one only
+when the task spans contexts:
+
+<!-- Edit to match your setup; names are the -name values from your MCP config. -->
+- `obsidian-work`     — current job: incidents, projects, people, decisions
+- `obsidian-personal` — personal life: reading lists, journaling, notes
+- _(add one line per vault you wire up)_
+
 ## Knowledge protocol (obsidian-graph MCP)
 
 The user's Obsidian vault is a hand-curated knowledge graph: notes are nodes and
