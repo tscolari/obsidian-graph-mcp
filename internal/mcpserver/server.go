@@ -1,0 +1,166 @@
+// Package mcpserver exposes the vault graph as MCP tools. Tool input/output
+// schemas are inferred from the struct json/jsonschema tags by the SDK's
+// generic AddTool, so the LLM sees typed, documented parameters.
+package mcpserver
+
+import (
+	"context"
+	"fmt"
+	"strings"
+
+	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/tscolari/obsidian-graph-mcp/internal/store"
+)
+
+// New builds a configured MCP server backed by st.
+func New(st *store.Store) *mcp.Server {
+	s := mcp.NewServer(&mcp.Implementation{
+		Name:    "obsidian-graph",
+		Version: "0.1.0",
+	}, nil)
+
+	h := &handlers{st: st}
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "search_notes",
+		Description: "Full-text-ish search over note titles and bodies. Use to find entry-point notes before traversing the link graph.",
+	}, h.search)
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "read_note",
+		Description: "Read a note's full markdown by title or vault-relative path.",
+	}, h.read)
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "note_links",
+		Description: "List a note's outgoing wikilinks and its backlinks (notes that link to it).",
+	}, h.links)
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "neighborhood",
+		Description: "Return the curated link-graph neighbourhood of a note within N hops (links followed in both directions). The primary way to gather correlated context.",
+	}, h.neighborhood)
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "notes_by_tag",
+		Description: "List notes carrying a given tag (frontmatter or inline #tag).",
+	}, h.byTag)
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "dangling_links",
+		Description: "List wikilinks that point at notes which do not exist yet — knowledge gaps.",
+	}, h.dangling)
+
+	return s
+}
+
+type handlers struct{ st *store.Store }
+
+type searchIn struct {
+	Query string `json:"query" jsonschema:"text to match in titles and bodies"`
+	Limit int    `json:"limit,omitempty" jsonschema:"max results (default 10)"`
+}
+type searchOut struct {
+	Hits []store.Hit `json:"hits"`
+}
+
+func (h *handlers) search(ctx context.Context, _ *mcp.CallToolRequest, in searchIn) (*mcp.CallToolResult, searchOut, error) {
+	hits, err := h.st.Search(ctx, in.Query, in.Limit)
+	if err != nil {
+		return nil, searchOut{}, err
+	}
+	var b strings.Builder
+	for _, hit := range hits {
+		fmt.Fprintf(&b, "- %s  (%s)\n", hit.Title, hit.Path)
+	}
+	return text(b.String()), searchOut{Hits: hits}, nil
+}
+
+type refIn struct {
+	Ref string `json:"ref" jsonschema:"note title or vault-relative path"`
+}
+type readOut struct {
+	Title   string `json:"title"`
+	Path    string `json:"path"`
+	Content string `json:"content"`
+}
+
+func (h *handlers) read(ctx context.Context, _ *mcp.CallToolRequest, in refIn) (*mcp.CallToolResult, readOut, error) {
+	title, path, content, err := h.st.ReadNote(ctx, in.Ref)
+	if err != nil {
+		return nil, readOut{}, err
+	}
+	return text(content), readOut{Title: title, Path: path, Content: content}, nil
+}
+
+type titleIn struct {
+	Title string `json:"title" jsonschema:"note title"`
+}
+type linksOut struct {
+	Outlinks  []store.Ref `json:"outlinks"`
+	Backlinks []store.Ref `json:"backlinks"`
+}
+
+func (h *handlers) links(ctx context.Context, _ *mcp.CallToolRequest, in titleIn) (*mcp.CallToolResult, linksOut, error) {
+	out, back, err := h.st.Links(ctx, in.Title)
+	if err != nil {
+		return nil, linksOut{}, err
+	}
+	return text(fmt.Sprintf("%d outlinks, %d backlinks", len(out), len(back))), linksOut{Outlinks: out, Backlinks: back}, nil
+}
+
+type neighborhoodIn struct {
+	Title string `json:"title" jsonschema:"note to start from"`
+	Depth int    `json:"depth,omitempty" jsonschema:"max hops, default 2"`
+}
+type neighborhoodOut struct {
+	Nodes []store.Neighbor `json:"nodes"`
+}
+
+func (h *handlers) neighborhood(ctx context.Context, _ *mcp.CallToolRequest, in neighborhoodIn) (*mcp.CallToolResult, neighborhoodOut, error) {
+	depth := in.Depth
+	if depth <= 0 {
+		depth = 2
+	}
+	nodes, err := h.st.Neighborhood(ctx, in.Title, depth)
+	if err != nil {
+		return nil, neighborhoodOut{}, err
+	}
+	var b strings.Builder
+	for _, n := range nodes {
+		fmt.Fprintf(&b, "%s%s\n", strings.Repeat("  ", n.Depth), n.Title)
+	}
+	return text(b.String()), neighborhoodOut{Nodes: nodes}, nil
+}
+
+type tagIn struct {
+	Tag string `json:"tag" jsonschema:"tag name without the leading #"`
+}
+type notesOut struct {
+	Notes []store.Ref `json:"notes"`
+}
+
+func (h *handlers) byTag(ctx context.Context, _ *mcp.CallToolRequest, in tagIn) (*mcp.CallToolResult, notesOut, error) {
+	notes, err := h.st.NotesByTag(ctx, in.Tag)
+	if err != nil {
+		return nil, notesOut{}, err
+	}
+	return text(fmt.Sprintf("%d notes tagged %q", len(notes), in.Tag)), notesOut{Notes: notes}, nil
+}
+
+type emptyIn struct{}
+type danglingOut struct {
+	Links []store.Dangling `json:"links"`
+}
+
+func (h *handlers) dangling(ctx context.Context, _ *mcp.CallToolRequest, _ emptyIn) (*mcp.CallToolResult, danglingOut, error) {
+	d, err := h.st.Dangling(ctx)
+	if err != nil {
+		return nil, danglingOut{}, err
+	}
+	return text(fmt.Sprintf("%d dangling links", len(d))), danglingOut{Links: d}, nil
+}
+
+func text(s string) *mcp.CallToolResult {
+	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: s}}}
+}
