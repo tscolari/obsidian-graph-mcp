@@ -68,11 +68,11 @@ is a thin plugin that manages this binary as a subprocess via Node's
 repo implements exactly that against the `-http` mode above. It:
 
 - **Spawn**, on vault open: `obsidian-graph-mcp -vault <abs vault path> -http 127.0.0.1:<port> -name <derived> -context <optional>` as a background process. stdout/stderr are free for logging in HTTP mode (unlike stdio mode, where stdout carries JSON-RPC).
-- **Pick a port** that won't collide with other simultaneously-open vaults, and persist it per vault so the plugin can detect and reattach to an already-running instance on the next launch instead of spawning a duplicate.
+- **Use a fixed, user-configured port** (no implicit scanning/auto-bumping): the port a client's MCP config points at must stay stable, so on collision the fix is to change the setting, not have the plugin silently pick a different port.
 - **Wait for readiness** by polling `GET /healthz` (e.g. every 200ms, ~10s timeout) before treating the vault as ready — a 200 means indexing already completed before the listener opened.
 - **Trigger reindexing** with `POST /reindex` on Obsidian's save/rename/delete vault events. Debouncing is the plugin's job, not the server's: `/reindex` always walks the full tree (cheaply, via content hash) and does no internal queuing.
 - **Shut down** on vault close by killing the spawned process by its tracked PID (there's no `/shutdown` route — process lifecycle is OS-level only). Don't kill on plugin disable, since a Claude Desktop session may still be attached; vault close is the right trigger.
-- **Avoid duplicate instances** on a vault open in multiple windows by checking the persisted port + `/healthz` before spawning a second process against the same SQLite file.
+- **Avoid duplicate instances** on a vault open in multiple windows by checking the configured port's `/healthz` before spawning a second process against the same SQLite file.
 
 See [`obsidian-plugin/README.md`](./obsidian-plugin/README.md) for how to build
 it and install it locally (unpacked) into a vault.

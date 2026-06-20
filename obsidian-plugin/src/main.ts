@@ -18,11 +18,6 @@ export default class GraphMcpPlugin extends Plugin {
     this.processManager = new ProcessManager({
       getSettings: () => this.settings,
       vaultPath: this.getVaultPath(),
-      onResolvedPort: async (port) => {
-        this.settings.resolvedPort = port;
-        await this.saveSettings();
-        this.updateStatusBar();
-      },
       log: (line) => {
         console.log(`[graph-mcp] ${line}`);
         this.updateStatusBar();

@@ -5,7 +5,6 @@ import { TOOLS, type SnippetInputs } from "./config-snippets";
 export interface PluginSettings {
   binaryPath: string;
   port: number;
-  resolvedPort: number | null;
   name: string;
   context: string;
   autoStart: boolean;
@@ -16,7 +15,6 @@ export function defaultSettings(vaultFolderName: string): PluginSettings {
   return {
     binaryPath: "",
     port: 8765,
-    resolvedPort: null,
     name: `obsidian-graph-${vaultFolderName}`,
     context: "",
     autoStart: true,
@@ -63,7 +61,10 @@ export class GraphMcpSettingTab extends PluginSettingTab {
     new Setting(containerEl)
       .setName("Port")
       .setDesc(
-        "Preferred port for the HTTP MCP endpoint. If taken, the plugin tries the next ones up.",
+        "Fixed port for the HTTP MCP endpoint. Kept stable on purpose — your coding " +
+          "tools' MCP config points at this exact port, so the plugin never silently " +
+          "picks a different one. Change it here (and update your MCP config to match) " +
+          "if it collides with something else.",
       )
       .addText((text) =>
         text

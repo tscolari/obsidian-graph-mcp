@@ -1,36 +1,13 @@
 import { ChildProcess, spawn } from "child_process";
 import * as http from "http";
-import * as net from "net";
 import type { PluginSettings } from "./settings";
 
 export type ServerStatus = "stopped" | "starting" | "running" | "error";
 
 const HOST = "127.0.0.1";
-const MAX_PORT_ATTEMPTS = 20;
 const HEALTHZ_POLL_INTERVAL_MS = 200;
 const HEALTHZ_TIMEOUT_MS = 10_000;
 const LOG_TAIL_LIMIT = 50;
-
-function findFreePort(startPort: number, maxAttempts: number): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const tryPort = (port: number, attemptsLeft: number) => {
-      const server = net.createServer();
-      server.once("error", (err: NodeJS.ErrnoException) => {
-        server.close();
-        if (err.code === "EADDRINUSE" && attemptsLeft > 0) {
-          tryPort(port + 1, attemptsLeft - 1);
-        } else {
-          reject(err);
-        }
-      });
-      server.once("listening", () => {
-        server.close(() => resolve(port));
-      });
-      server.listen(port, HOST);
-    };
-    tryPort(startPort, maxAttempts);
-  });
-}
 
 function pollHealthz(port: number, timeoutMs: number): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
@@ -71,7 +48,6 @@ function postReindex(port: number): Promise<void> {
 export interface ProcessManagerDeps {
   getSettings: () => PluginSettings;
   vaultPath: string;
-  onResolvedPort: (port: number | null) => void | Promise<void>;
   log: (line: string) => void;
 }
 
@@ -86,7 +62,6 @@ export class ProcessManager {
 
   constructor(deps: ProcessManagerDeps) {
     this.deps = deps;
-    this.resolvedPort = deps.getSettings().resolvedPort;
   }
 
   getLogTail(): string[] {
@@ -105,26 +80,18 @@ export class ProcessManager {
       return;
     }
 
-    if (settings.resolvedPort) {
-      const healthy = await pollHealthz(settings.resolvedPort, 500);
-      if (healthy) {
-        this.resolvedPort = settings.resolvedPort;
-        this.ownsProcess = false;
-        this.status = "running";
-        this.pushLog(`reattached to existing instance on port ${this.resolvedPort}`);
-        return;
-      }
+    const port = settings.port;
+
+    const alreadyHealthy = await pollHealthz(port, 500);
+    if (alreadyHealthy) {
+      this.resolvedPort = port;
+      this.ownsProcess = false;
+      this.status = "running";
+      this.pushLog(`reattached to existing instance on port ${port}`);
+      return;
     }
 
     this.status = "starting";
-    let port: number;
-    try {
-      port = await findFreePort(settings.port, MAX_PORT_ATTEMPTS);
-    } catch (err) {
-      this.status = "error";
-      this.pushLog(`no free port found starting at ${settings.port}: ${err}`);
-      return;
-    }
 
     const args = [
       "-vault",
@@ -158,7 +125,9 @@ export class ProcessManager {
     const healthy = await pollHealthz(port, HEALTHZ_TIMEOUT_MS);
     if (!healthy) {
       this.status = "error";
-      this.pushLog("timed out waiting for /healthz");
+      this.pushLog(
+        `timed out waiting for /healthz on port ${port} — it may be in use by another process; change the port in settings if so`,
+      );
       child.kill();
       this.child = null;
       return;
@@ -166,7 +135,6 @@ export class ProcessManager {
 
     this.resolvedPort = port;
     this.status = "running";
-    await this.deps.onResolvedPort(port);
   }
 
   async stop(): Promise<void> {
