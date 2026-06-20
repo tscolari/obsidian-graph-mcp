@@ -13,7 +13,8 @@ import (
 )
 
 type Stats struct {
-	Seen, Changed int
+	Seen    int `json:"seen"`
+	Changed int `json:"changed"`
 }
 
 // Vault indexes every .md file under root. It is incremental: notes whose

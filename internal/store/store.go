@@ -47,11 +47,15 @@ CREATE INDEX IF NOT EXISTS idx_notes_title ON notes(lower(title));
 type Store struct{ db *sql.DB }
 
 func Open(path string) (*Store, error) {
-	dsn := fmt.Sprintf("file:%s?_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)", path)
+	dsn := fmt.Sprintf("file:%s?_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)", path)
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, err
 	}
+	// HTTP mode serves concurrent requests on separate goroutines; a single
+	// connection (atop WAL + busy_timeout above) avoids SQLITE_BUSY races
+	// between MCP tool reads and a /reindex write without an app-level mutex.
+	db.SetMaxOpenConns(1)
 	return &Store{db: db}, nil
 }
 

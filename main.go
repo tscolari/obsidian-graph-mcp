@@ -1,5 +1,7 @@
 // Command obsidian-graph-mcp indexes an Obsidian vault into SQLite and serves
-// its link graph to an MCP client (Claude Desktop, Claude Code, etc.) over stdio.
+// its link graph to an MCP client (Claude Desktop, Claude Code, etc.) over
+// stdio (default, one process per client) or HTTP (-http, a long-lived
+// instance shared by several clients).
 //
 //	obsidian-graph-mcp -vault ~/notes -db ~/notes/.graph.db
 package main
@@ -8,9 +10,11 @@ import (
 	"context"
 	"flag"
 	"log"
+	"net/http"
 	"os"
 	"path/filepath"
 
+	"github.com/tscolari/obsidian-graph-mcp/internal/httpserver"
 	"github.com/tscolari/obsidian-graph-mcp/internal/index"
 	"github.com/tscolari/obsidian-graph-mcp/internal/mcpserver"
 	"github.com/tscolari/obsidian-graph-mcp/internal/store"
@@ -24,6 +28,7 @@ func main() {
 	indexOnly := flag.Bool("index-only", false, "index then exit, do not serve")
 	name := flag.String("name", "", "MCP server name for this vault, used to namespace tools when running multiple instances (default: obsidian-graph-<vault folder>)")
 	vaultContext := flag.String("context", "", "one-line description of what this vault holds, advertised to the agent (e.g. \"HashiCorp work notes: incidents, projects, people\")")
+	httpAddr := flag.String("http", "", "if set, serve MCP over HTTP at this address (e.g. 127.0.0.1:8765) instead of stdio")
 	flag.Parse()
 
 	if *dbPath == "" {
@@ -58,7 +63,16 @@ func main() {
 	}
 
 	srv := mcpserver.New(st, *name, *vaultContext)
-	if err := srv.Run(ctx, &mcp.StdioTransport{}); err != nil {
+
+	if *httpAddr == "" {
+		if err := srv.Run(ctx, &mcp.StdioTransport{}); err != nil {
+			log.Fatalf("serve: %v", err)
+		}
+		return
+	}
+
+	log.Printf("serving http on %s (/mcp, /healthz, /reindex)", *httpAddr)
+	if err := http.ListenAndServe(*httpAddr, httpserver.New(st, *vaultDir, srv)); err != nil {
 		log.Fatalf("serve: %v", err)
 	}
 }
