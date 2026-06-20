@@ -64,7 +64,8 @@ There's no way to load a compiled Go binary as an Obsidian plugin directly —
 plugins are JS/TS bundles loaded into Obsidian's Electron process. The
 supported pattern (used by e.g. `obsidian-git` to drive the real `git` binary)
 is a thin plugin that manages this binary as a subprocess via Node's
-`child_process`. A plugin built against the `-http` mode above should:
+`child_process`. The [`obsidian-plugin/`](./obsidian-plugin) folder in this
+repo implements exactly that against the `-http` mode above. It:
 
 - **Spawn**, on vault open: `obsidian-graph-mcp -vault <abs vault path> -http 127.0.0.1:<port> -name <derived> -context <optional>` as a background process. stdout/stderr are free for logging in HTTP mode (unlike stdio mode, where stdout carries JSON-RPC).
 - **Pick a port** that won't collide with other simultaneously-open vaults, and persist it per vault so the plugin can detect and reattach to an already-running instance on the next launch instead of spawning a duplicate.
