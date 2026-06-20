@@ -74,6 +74,9 @@ repo implements exactly that against the `-http` mode above. It:
 - **Shut down** on vault close by killing the spawned process by its tracked PID (there's no `/shutdown` route — process lifecycle is OS-level only). Don't kill on plugin disable, since a Claude Desktop session may still be attached; vault close is the right trigger.
 - **Avoid duplicate instances** on a vault open in multiple windows by checking the persisted port + `/healthz` before spawning a second process against the same SQLite file.
 
+See [`obsidian-plugin/README.md`](./obsidian-plugin/README.md) for how to build
+it and install it locally (unpacked) into a vault.
+
 ## Wire into Claude Desktop / Claude Code
 
 `claude_desktop_config.json` (or `claude mcp add`), spawning over stdio:
