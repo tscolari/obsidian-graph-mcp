@@ -45,7 +45,13 @@ as part of your reasoning — not only when explicitly told.
 1. `search_notes` — find the entry-point note(s).
 2. `neighborhood` — gather the context the user hand-linked around it. Prefer
    `rels=["origin","references"]` to follow curated frontmatter relations and
-   skip incidental body mentions.
+   skip incidental body mentions. Each node is labelled with the relation and
+   direction it was reached by (e.g. `origin (in)`). For "what is X / background
+   on X" questions, pass `direction="out"` to get what the note itself draws on:
+   a node reached by an **incoming** `origin` is a note derived *from* X (a
+   downstream child), not background — don't read it for a definition or rubric
+   question. Use `direction="in"` to find that downstream work; `both` (default)
+   sweeps everything.
 3. `origin_chain` — when the question is about provenance ("why/where from"),
    trace `Origin` to its root.
 4. `read_note` — read the specific notes you judged relevant.

@@ -205,7 +205,7 @@ vault per question.
 | `search_notes` | find entry-point notes (title/body match) |
 | `read_note` | full markdown by title or path |
 | `note_links` | outlinks + backlinks for a note, grouped by relation (body/origin/references/…) |
-| `neighborhood` | **n-hop undirected link neighbourhood — the core "correlated context" query** (optional `rels` filter to follow only e.g. `origin`/`references`) |
+| `neighborhood` | **n-hop link neighbourhood — the core "correlated context" query** (optional `rels` filter to follow only e.g. `origin`/`references`; optional `direction` — `out`/`in`/`both`); each node is labelled with the relation and direction it was reached by, so `direction="out"` gives a note's own background while an incoming `origin` flags a downstream child |
 | `origin_chain` | **follow a note's `Origin` frontmatter link directionally to its root — the provenance/genealogy trace** |
 | `notes_by_tag` | notes carrying a tag |
 | `dangling_links` | wikilinks pointing at non-existent notes (carries the `rel`, so a dangling `Origin` is distinguishable from a body mention) |
@@ -226,8 +226,9 @@ real logic:
   ~95% coverage.
 - `internal/store/store_test.go` — runs against a temp SQLite DB: upsert
   changed-flag, case-insensitive link resolution + dangling links (with `rel`),
-  the recursive-CTE neighbourhood (cycle-safe, depth-bounded, shortest-depth,
-  undirected) **plus its `rel` filter**, the directed **`origin_chain`** trace
+  the recursive-CTE neighbourhood (cycle-safe, depth-bounded, shortest-depth)
+  **plus its `rel` filter and `direction` (out/in/both) with per-node edge
+  labels**, the directed **`origin_chain`** trace
   (ordered, cycle-safe, stops at unresolved), relation-typed `note_links`, the
   **v1→v2 schema migration**, tag lookup, search, and `read_note`. ~80% coverage.
 - `internal/httpserver/httpserver_test.go` — `/healthz`, `/reindex` (method

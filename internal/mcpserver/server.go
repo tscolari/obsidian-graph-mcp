@@ -44,7 +44,7 @@ func New(st *store.Store, name, vaultContext string) *mcp.Server {
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "neighborhood",
-		Description: "After finding an entry note, call this to gather the correlated context the user has hand-linked around it, within N hops (links followed in both directions). The primary way to assemble relevant background. Pass rels=[\"origin\",\"references\"] to follow only curated frontmatter relations and ignore incidental body mentions.",
+		Description: "After finding an entry note, call this to gather the correlated context the user has hand-linked around it, within N hops. The primary way to assemble relevant background. Each node is labelled with the relation and direction it was reached by, e.g. \"origin (in)\". Pass rels=[\"origin\",\"references\"] to follow only curated frontmatter relations and ignore incidental body mentions. Use direction=\"out\" for \"what is X / background on X\" questions (what the note draws on); a node reached by an INCOMING origin is a note derived FROM X (downstream child) — not background, so don't read it for a definition/rubric question. direction=\"in\" finds downstream work; \"both\" (default) sweeps all edges.",
 	}, h.neighborhood)
 
 	mcp.AddTool(s, &mcp.Tool{
@@ -143,9 +143,10 @@ func writeRefsByRel(b *strings.Builder, refs []store.Ref) {
 }
 
 type neighborhoodIn struct {
-	Title string   `json:"title" jsonschema:"note to start from"`
-	Depth int      `json:"depth,omitempty" jsonschema:"max hops, default 2"`
-	Rels  []string `json:"rels,omitempty" jsonschema:"restrict to these relation types (e.g. origin, references); empty = all edges"`
+	Title     string   `json:"title" jsonschema:"note to start from"`
+	Depth     int      `json:"depth,omitempty" jsonschema:"max hops, default 2"`
+	Rels      []string `json:"rels,omitempty" jsonschema:"restrict to these relation types (e.g. origin, references); empty = all edges"`
+	Direction string   `json:"direction,omitempty" jsonschema:"out = what this note draws on (its background/provenance), in = notes derived from it (downstream children), both = all (default)"`
 }
 type neighborhoodOut struct {
 	Nodes []store.Neighbor `json:"nodes"`
@@ -156,13 +157,26 @@ func (h *handlers) neighborhood(ctx context.Context, _ *mcp.CallToolRequest, in 
 	if depth <= 0 {
 		depth = 2
 	}
-	nodes, err := h.st.Neighborhood(ctx, in.Title, depth, in.Rels)
+	direction := in.Direction
+	if direction == "" {
+		direction = "both"
+	}
+	nodes, err := h.st.Neighborhood(ctx, in.Title, depth, in.Rels, direction)
 	if err != nil {
 		return nil, neighborhoodOut{}, err
 	}
 	var b strings.Builder
 	for _, n := range nodes {
-		fmt.Fprintf(&b, "%s%s\n", strings.Repeat("  ", n.Depth), n.Title)
+		indent := strings.Repeat("  ", n.Depth)
+		if n.Dir == "" { // start node — no connecting edge
+			fmt.Fprintf(&b, "%s%s\n", indent, n.Title)
+			continue
+		}
+		rel := n.Rel
+		if rel == "" {
+			rel = "body"
+		}
+		fmt.Fprintf(&b, "%s%s — %s (%s)\n", indent, n.Title, rel, n.Dir)
 	}
 	return text(b.String()), neighborhoodOut{Nodes: nodes}, nil
 }

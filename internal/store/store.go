@@ -301,15 +301,37 @@ type Neighbor struct {
 	Title string `json:"title"`
 	Path  string `json:"path"`
 	Depth int    `json:"depth"`
+	Rel   string `json:"rel"` // relation it was reached by ("" = body link); empty for the start node
+	Dir   string `json:"dir"` // "out" (start→node) or "in" (node→start); empty for the start node
 }
 
-// Neighborhood returns the undirected n-hop neighbourhood of a note: edges are
-// followed in both directions (outlinks + backlinks), bounded by maxDepth, with
-// each node reported at its shortest depth. This is the curated-graph payoff —
-// "what's related to X within 2 hops" without any embeddings. When rels is
-// non-empty, only edges with those relation types are traversed (e.g. ["origin",
-// "references"] to walk only curated frontmatter links, ignoring body mentions).
-func (s *Store) Neighborhood(ctx context.Context, start string, maxDepth int, rels []string) ([]Neighbor, error) {
+// Neighborhood returns the n-hop neighbourhood of a note, bounded by maxDepth,
+// with each node reported at its shortest depth plus the relation and direction
+// of the edge it was reached by. This is the curated-graph payoff — "what's
+// related to X within 2 hops" without any embeddings.
+//
+// direction controls which edges are followed: "out" walks src→dst (what the
+// note draws on — its provenance/background), "in" walks dst→src (notes derived
+// from it — downstream children), and "both" (the default) follows both. Because
+// Origin/References are authored on the deriving note pointing up to its source,
+// "out" surfaces a note's own background while filtering out downstream children.
+//
+// When rels is non-empty, only edges with those relation types are traversed
+// (e.g. ["origin", "references"] to walk only curated frontmatter links, ignoring
+// body mentions). Each returned node carries the rel/dir of its shallowest edge;
+// the start node itself has empty rel/dir.
+func (s *Store) Neighborhood(ctx context.Context, start string, maxDepth int, rels []string, direction string) ([]Neighbor, error) {
+	// nextId/join/dir vary by traversal direction; "both" is the default.
+	join := "(l.src_id = nbh.id OR l.dst_id = nbh.id)"
+	nextID := "CASE WHEN l.src_id = nbh.id THEN l.dst_id ELSE l.src_id END"
+	dirExpr := "CASE WHEN l.src_id = nbh.id THEN 'out' ELSE 'in' END"
+	switch direction {
+	case "out":
+		join, nextID, dirExpr = "l.src_id = nbh.id", "l.dst_id", "'out'"
+	case "in":
+		join, nextID, dirExpr = "l.dst_id = nbh.id", "l.src_id", "'in'"
+	}
+
 	relFilter, args := "", []any{start, maxDepth}
 	if len(rels) > 0 {
 		ph := make([]string, len(rels))
@@ -319,18 +341,20 @@ func (s *Store) Neighborhood(ctx context.Context, start string, maxDepth int, re
 		}
 		relFilter = " AND l.rel IN (" + strings.Join(ph, ",") + ")"
 	}
+	// One MIN() aggregate means the bare rel/dir columns come from the
+	// minimum-depth row (SQLite's documented bare-column behaviour).
 	q := `
 WITH RECURSIVE
   seed(id) AS (SELECT id FROM notes WHERE lower(title) = lower(?)),
-  nbh(id, depth) AS (
-    SELECT id, 0 FROM seed
+  nbh(id, depth, rel, dir) AS (
+    SELECT id, 0, '', '' FROM seed
     UNION
-    SELECT CASE WHEN l.src_id = nbh.id THEN l.dst_id ELSE l.src_id END, nbh.depth + 1
-    FROM nbh JOIN links l ON (l.src_id = nbh.id OR l.dst_id = nbh.id)
+    SELECT ` + nextID + `, nbh.depth + 1, l.rel, ` + dirExpr + `
+    FROM nbh JOIN links l ON ` + join + `
     WHERE nbh.depth < ?
-      AND (CASE WHEN l.src_id = nbh.id THEN l.dst_id ELSE l.src_id END) IS NOT NULL` + relFilter + `
+      AND (` + nextID + `) IS NOT NULL` + relFilter + `
   )
-SELECT n.title, n.path, MIN(nbh.depth) AS depth
+SELECT n.title, n.path, MIN(nbh.depth) AS depth, nbh.rel, nbh.dir
 FROM nbh JOIN notes n ON n.id = nbh.id
 GROUP BY n.id ORDER BY depth, n.title;`
 	rows, err := s.db.QueryContext(ctx, q, args...)
@@ -341,7 +365,7 @@ GROUP BY n.id ORDER BY depth, n.title;`
 	var out []Neighbor
 	for rows.Next() {
 		var n Neighbor
-		if err := rows.Scan(&n.Title, &n.Path, &n.Depth); err != nil {
+		if err := rows.Scan(&n.Title, &n.Path, &n.Depth, &n.Rel, &n.Dir); err != nil {
 			return nil, err
 		}
 		out = append(out, n)

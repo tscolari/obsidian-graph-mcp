@@ -215,7 +215,7 @@ func TestNeighborhood(t *testing.T) {
 		return m
 	}
 
-	d1, err := st.Neighborhood(ctx, "Alpha", 1, nil)
+	d1, err := st.Neighborhood(ctx, "Alpha", 1, nil, "both")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -249,7 +249,7 @@ func TestNeighborhood(t *testing.T) {
 
 func mustNbh(t *testing.T, st *Store, start string, depth int) []Neighbor {
 	t.Helper()
-	ns, err := st.Neighborhood(context.Background(), start, depth, nil)
+	ns, err := st.Neighborhood(context.Background(), start, depth, nil, "both")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -263,7 +263,7 @@ func TestNeighborhood_RelFilter(t *testing.T) {
 
 	// Following only origin edges from Gamma: Gamma -> Beta -> Alpha (directed
 	// origin edges, but neighbourhood is undirected so this is the reachable set).
-	ns, err := st.Neighborhood(ctx, "Gamma", 3, []string{"origin"})
+	ns, err := st.Neighborhood(ctx, "Gamma", 3, []string{"origin"}, "both")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -277,6 +277,65 @@ func TestNeighborhood_RelFilter(t *testing.T) {
 	// Delta is reachable from Gamma only by a body edge, so it must be excluded.
 	if _, ok := got["Delta"]; ok {
 		t.Errorf("Delta leaked into origin-only neighbourhood: %v", got)
+	}
+}
+
+// TestNeighborhood_Direction reproduces the "downstream child leaks into
+// background" bug. Beta is the entry note (think: a career matrix). Beta's own
+// origin points up to Alpha (its background). Gamma's origin points DOWN at Beta
+// (Gamma =origin=> Beta), so Gamma is a note derived FROM Beta — a downstream
+// child, not background.
+func TestNeighborhood_Direction(t *testing.T) {
+	ctx := context.Background()
+	st := newTestStore(t)
+	seed(t, st)
+
+	relDir := func(ns []Neighbor) map[string][2]string {
+		m := map[string][2]string{}
+		for _, n := range ns {
+			m[n.Title] = [2]string{n.Rel, n.Dir}
+		}
+		return m
+	}
+
+	// direction=out follows Beta -> Alpha (what Beta draws on) and must NOT
+	// surface Gamma, the downstream child whose origin points back at Beta.
+	out, err := st.Neighborhood(ctx, "Beta", 1, []string{"origin"}, "out")
+	if err != nil {
+		t.Fatal(err)
+	}
+	od := relDir(out)
+	if got, ok := od["Alpha"]; !ok || got != [2]string{"origin", "out"} {
+		t.Errorf("out: Alpha = %v (ok=%v), want origin/out", got, ok)
+	}
+	if _, ok := od["Gamma"]; ok {
+		t.Errorf("out: downstream child Gamma leaked into background: %v", od)
+	}
+
+	// direction=in finds the downstream child Gamma and not the background Alpha.
+	in, err := st.Neighborhood(ctx, "Beta", 1, []string{"origin"}, "in")
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := relDir(in)
+	if got, ok := id["Gamma"]; !ok || got != [2]string{"origin", "in"} {
+		t.Errorf("in: Gamma = %v (ok=%v), want origin/in", got, ok)
+	}
+	if _, ok := id["Alpha"]; ok {
+		t.Errorf("in: background Alpha leaked into downstream view: %v", id)
+	}
+
+	// direction=both surfaces both, each labelled with how it connects.
+	both, err := st.Neighborhood(ctx, "Beta", 1, []string{"origin"}, "both")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bd := relDir(both)
+	if got := bd["Alpha"]; got != [2]string{"origin", "out"} {
+		t.Errorf("both: Alpha = %v, want origin/out", got)
+	}
+	if got := bd["Gamma"]; got != [2]string{"origin", "in"} {
+		t.Errorf("both: Gamma = %v, want origin/in", got)
 	}
 }
 
