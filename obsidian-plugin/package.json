@@ -1,0 +1,20 @@
+{
+  "name": "obsidian-graph-mcp-plugin",
+  "version": "0.1.0",
+  "description": "Obsidian plugin that supervises obsidian-graph-mcp as a long-lived background MCP server.",
+  "main": "main.js",
+  "private": true,
+  "scripts": {
+    "dev": "node esbuild.config.mjs",
+    "build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production",
+    "test": "node --import tsx --test src/**/*.test.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "builtin-modules": "^3.3.0",
+    "esbuild": "^0.20.0",
+    "obsidian": "^1.5.7",
+    "tsx": "^4.7.0",
+    "typescript": "^5.4.0"
+  }
+}

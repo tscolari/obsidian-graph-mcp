@@ -1,0 +1,9 @@
+{
+  "id": "obsidian-graph-mcp",
+  "name": "Graph MCP",
+  "version": "0.1.0",
+  "minAppVersion": "1.4.0",
+  "description": "Runs obsidian-graph-mcp as a background MCP server for this vault, so coding agents can query its link graph.",
+  "author": "tscolari",
+  "isDesktopOnly": true
+}
