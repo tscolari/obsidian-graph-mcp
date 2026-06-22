@@ -13,7 +13,6 @@ export default class GraphMcpPlugin extends Plugin {
     await this.loadSettings();
 
     this.statusBarItem = this.addStatusBarItem();
-    this.updateStatusBar();
 
     this.processManager = new ProcessManager({
       getSettings: () => this.settings,
