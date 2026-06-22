@@ -1,4 +1,4 @@
-name: Release Obsidian plugin
+name: Release
 
 on:
   push:
@@ -14,6 +14,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build Go binaries
+        run: |
+          GOOS=linux  GOARCH=amd64 go build -o obsidian-graph-mcp-linux-amd64  .
+          GOOS=linux  GOARCH=arm64 go build -o obsidian-graph-mcp-linux-arm64  .
+          GOOS=darwin GOARCH=amd64 go build -o obsidian-graph-mcp-darwin-amd64 .
+          GOOS=darwin GOARCH=arm64 go build -o obsidian-graph-mcp-darwin-arm64 .
+
       - uses: actions/setup-node@v4
         with:
           node-version: "24"
@@ -28,6 +39,10 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
+            obsidian-graph-mcp-linux-amd64
+            obsidian-graph-mcp-linux-arm64
+            obsidian-graph-mcp-darwin-amd64
+            obsidian-graph-mcp-darwin-arm64
             obsidian-plugin/main.js
             obsidian-plugin/manifest.json
             obsidian-plugin/versions.json
