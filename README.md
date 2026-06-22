@@ -74,8 +74,30 @@ repo implements exactly that against the `-http` mode above. It:
 - **Shut down** on vault close by killing the spawned process by its tracked PID (there's no `/shutdown` route — process lifecycle is OS-level only). Don't kill on plugin disable, since a Claude Desktop session may still be attached; vault close is the right trigger.
 - **Avoid duplicate instances** on a vault open in multiple windows by checking the configured port's `/healthz` before spawning a second process against the same SQLite file.
 
+## Install the Obsidian plugin
+
+### Via BRAT (recommended)
+
+[BRAT](https://github.com/TfTHacker/obsidian42-brat) lets you install the plugin
+directly from this repo, with one-click updates.
+
+1. Install **BRAT** from the Obsidian community plugins.
+2. Open **Settings → BRAT → Add Beta Plugin** and enter:
+   ```
+   tscolari/obsidian-graph-mcp
+   ```
+3. Enable **Graph MCP** in **Settings → Community Plugins**.
+4. Open **Settings → Graph MCP**, set the **Binary path** to the compiled
+   `obsidian-graph-mcp` binary (see [Build & run](#build--run) above), and
+   optionally toggle **Auto-start**.
+
+BRAT downloads `main.js` and `manifest.json` from the latest GitHub release and
+keeps the plugin up to date automatically.
+
+### Local dev (symlink)
+
 See [`obsidian-plugin/README.md`](./obsidian-plugin/README.md) for how to build
-it and install it locally (unpacked) into a vault.
+and symlink the plugin directory into a vault for local development.
 
 ## Wire into Claude Desktop / Claude Code
 
