@@ -24,7 +24,7 @@ var (
 // (e.g. "origin", "references"). Frontmatter links are the hand-curated,
 // typed relations; body links are incidental mentions.
 type Link struct {
-	Target string // basename-normalised link target
+	Target string // normalised link target; folder prefix preserved when explicit (e.g. "folder/Note")
 	Rel    string // "" = body link; else frontmatter property name
 }
 
@@ -59,7 +59,7 @@ func ParseNote(title, content string) Note {
 	}
 
 	for _, m := range wikilinkRe.FindAllStringSubmatch(stripCode(body), -1) {
-		add(basename(m[1]), "")
+		add(normalizeTarget(m[1]), "")
 	}
 	for _, l := range frontmatterLinks(fm) {
 		add(l.Target, l.Rel)
@@ -91,7 +91,7 @@ func frontmatterLinks(fm string) []Link {
 			if strings.Contains(raw, "<%") || strings.Contains(raw, "{{") {
 				continue // template placeholder, not a real link
 			}
-			if t := basename(raw); t != "" {
+			if t := normalizeTarget(raw); t != "" {
 				out = append(out, Link{Target: t, Rel: rel})
 			}
 		}
@@ -172,10 +172,10 @@ func parseTags(fm, body string) []string {
 	return out
 }
 
-func basename(target string) string {
-	target = strings.TrimSpace(target)
-	if i := strings.LastIndex(target, "/"); i >= 0 {
-		target = target[i+1:]
-	}
+// normalizeTarget trims whitespace from a captured wikilink target.
+// The folder prefix is intentionally preserved: [[folder/Note]] stores
+// "folder/Note" so ResolveLinks can do path-based resolution first.
+// Heading fragments and aliases are already excluded by the wikilink regex.
+func normalizeTarget(target string) string {
 	return strings.TrimSpace(target)
 }

@@ -20,8 +20,10 @@ internal/httpserver/        /mcp, /healthz, /reindex for networked deployments
 ## Data model
 
 Notes are rows; wikilinks are edges in a `links` table. An unresolved link keeps
-`dst_id NULL`, so dangling links (knowledge gaps) stay queryable. Resolution maps a
-link target to a note by case-insensitive title match.
+`dst_id NULL`, so dangling links (knowledge gaps) stay queryable. Resolution is
+two-pass: `[[folder/Note]]` resolves by path first (honouring the explicit prefix);
+`[[Note]]` resolves by case-insensitive title. A path-prefixed link that doesn't
+match any path stays dangling — no silent title fallback.
 
 Each edge carries a **relation type** (`rel`): body wikilinks get `rel=''`, while
 wikilinks in **frontmatter properties** become typed edges tagged with the property

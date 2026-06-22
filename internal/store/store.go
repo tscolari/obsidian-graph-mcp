@@ -64,7 +64,7 @@ func (s *Store) Close() error { return s.db.Close() }
 // schemaVersion bumps whenever the on-disk shape changes. The DB is a cache
 // rebuildable from the vault, so an older version is migrated by dropping the
 // affected table and letting the next index repopulate it.
-const schemaVersion = 2
+const schemaVersion = 3
 
 func (s *Store) ApplySchema(ctx context.Context) error {
 	// v1 (which never set user_version, so it reads as 0) had a links table
@@ -84,6 +84,18 @@ func (s *Store) ApplySchema(ctx context.Context) error {
 	if _, err := s.db.ExecContext(ctx, schema); err != nil {
 		return err
 	}
+
+	// v2 → v3: dst_target now preserves folder prefixes (e.g. "folder/Note"
+	// instead of "Note"). Clear links and reset hashes so the next index
+	// re-parses every note and repopulates edges with the new targets.
+	var version int
+	_ = s.db.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&version)
+	if version < 3 {
+		if _, err := s.db.ExecContext(ctx, `DELETE FROM links; UPDATE notes SET hash = '';`); err != nil {
+			return err
+		}
+	}
+
 	_, err = s.db.ExecContext(ctx, fmt.Sprintf(`PRAGMA user_version = %d`, schemaVersion))
 	return err
 }
@@ -178,14 +190,33 @@ func (s *Store) ReplaceTags(ctx context.Context, noteID int64, tags []string) er
 	return tx.Commit()
 }
 
-// ResolveLinks matches every link target to a note by (case-insensitive) title.
-// Cheap to run wholesale after a full index; for big vaults resolve per-changed-note.
+// ResolveLinks matches every link target to a note. Three passes:
+//
+// ResolveLinks resolves wikilink targets to note IDs in two passes:
+//  1. Path match for targets containing "/" — the author wrote [[folder/Note]]
+//     explicitly, so honour the path. Unresolved path-prefixed links stay dangling.
+//  2. Title match for bare targets (no "/") — existing behaviour.
 func (s *Store) ResolveLinks(ctx context.Context) error {
-	_, err := s.db.ExecContext(ctx, `
+	// Pass 1: path match for explicit folder/note targets.
+	if _, err := s.db.ExecContext(ctx, `
+		UPDATE links SET dst_id = (
+			SELECT n.id FROM notes n
+			WHERE lower(n.path) = lower(links.dst_target||'.md')
+			   OR lower(n.path) LIKE lower('%/'||links.dst_target||'.md')
+			LIMIT 1
+		) WHERE dst_id IS NULL AND instr(dst_target, '/') > 0`); err != nil {
+		return err
+	}
+
+	// Pass 2: title match for bare targets.
+	if _, err := s.db.ExecContext(ctx, `
 		UPDATE links SET dst_id = (
 			SELECT n.id FROM notes n WHERE lower(n.title) = lower(links.dst_target) LIMIT 1
-		)`)
-	return err
+		) WHERE dst_id IS NULL AND instr(dst_target, '/') = 0`); err != nil {
+		return err
+	}
+
+	return nil
 }
 
 type Ref struct {

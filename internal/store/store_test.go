@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"path/filepath"
 	"sort"
 	"testing"
@@ -405,5 +406,96 @@ func TestReadNote(t *testing.T) {
 	}
 	if title != "Delta" {
 		t.Errorf("by path: title = %q, want Delta", title)
+	}
+}
+
+func TestResolveLinks_PathBased(t *testing.T) {
+	ctx := context.Background()
+	st := newTestStore(t)
+
+	// Two notes with the same title in different folders.
+	projID, _, _ := st.UpsertNote(ctx, "projects/Alpha.md", "Alpha", "", "h1", 1)
+	jrnlID, _, _ := st.UpsertNote(ctx, "journal/Alpha.md", "Alpha", "", "h2", 1)
+	srcID, _, _ := st.UpsertNote(ctx, "src.md", "Src", "", "h3", 1)
+
+	if err := st.ReplaceLinks(ctx, srcID, []LinkInput{
+		{Target: "projects/Alpha"}, // explicit path → should pick projects/Alpha.md
+		{Target: "journal/Alpha"},  // explicit path → should pick journal/Alpha.md
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.ResolveLinks(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	var projResolved, jrnlResolved int64
+	if err := st.db.QueryRowContext(ctx,
+		`SELECT dst_id FROM links WHERE src_id=? AND dst_target=?`, srcID, "projects/Alpha",
+	).Scan(&projResolved); err != nil {
+		t.Fatalf("query projects/Alpha: %v", err)
+	}
+	if err := st.db.QueryRowContext(ctx,
+		`SELECT dst_id FROM links WHERE src_id=? AND dst_target=?`, srcID, "journal/Alpha",
+	).Scan(&jrnlResolved); err != nil {
+		t.Fatalf("query journal/Alpha: %v", err)
+	}
+	if projResolved != projID {
+		t.Errorf("projects/Alpha resolved to id %d, want %d (projects note)", projResolved, projID)
+	}
+	if jrnlResolved != jrnlID {
+		t.Errorf("journal/Alpha resolved to id %d, want %d (journal note)", jrnlResolved, jrnlID)
+	}
+}
+
+func TestResolveLinks_WrongPathStaysDangling(t *testing.T) {
+	ctx := context.Background()
+	st := newTestStore(t)
+
+	// Note exists, but the link uses a wrong path — should stay dangling, not fall back to title.
+	st.UpsertNote(ctx, "notes/Alpha.md", "Alpha", "", "h1", 1)
+	srcID, _, _ := st.UpsertNote(ctx, "src.md", "Src", "", "h2", 1)
+
+	if err := st.ReplaceLinks(ctx, srcID, []LinkInput{
+		{Target: "wrong/Alpha"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.ResolveLinks(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	var dstID sql.NullInt64
+	if err := st.db.QueryRowContext(ctx,
+		`SELECT dst_id FROM links WHERE src_id=? AND dst_target=?`, srcID, "wrong/Alpha",
+	).Scan(&dstID); err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if dstID.Valid {
+		t.Errorf("wrong-path link should be dangling (dst_id NULL), got %d", dstID.Int64)
+	}
+}
+
+func TestResolveLinks_BareTargetUnchanged(t *testing.T) {
+	ctx := context.Background()
+	st := newTestStore(t)
+
+	noteID, _, _ := st.UpsertNote(ctx, "notes/Alpha.md", "Alpha", "", "h1", 1)
+	srcID, _, _ := st.UpsertNote(ctx, "src.md", "Src", "", "h2", 1)
+
+	if err := st.ReplaceLinks(ctx, srcID, []LinkInput{{Target: "Alpha"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.ResolveLinks(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	var dstID int64
+	if err := st.db.QueryRowContext(ctx,
+		`SELECT dst_id FROM links WHERE src_id=? AND dst_target=?`, srcID, "Alpha",
+	).Scan(&dstID); err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if dstID != noteID {
+		t.Errorf("bare target: resolved to %d, want %d", dstID, noteID)
 	}
 }

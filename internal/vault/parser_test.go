@@ -54,11 +54,12 @@ func TestParseNote_Links(t *testing.T) {
 		want    []string // exact set, order-independent
 	}{
 		{"plain", "see [[Beta]]", []string{"Beta"}},
-		{"alias", "see [[sub/Gamma|Gamma]]", []string{"Gamma"}},
+		{"alias", "see [[sub/Gamma|Gamma]]", []string{"sub/Gamma"}},
 		{"heading", "see [[Delta#heading]]", []string{"Delta"}},
 		{"embed", "see ![[Image]]", []string{"Image"}},
-		{"folder basename", "see [[a/b/Note]]", []string{"Note"}},
-		{"folder+heading+alias", "see [[folder/N#h|alias]]", []string{"N"}},
+		{"folder path preserved", "see [[a/b/Note]]", []string{"a/b/Note"}},
+		{"folder+heading", "see [[folder/N#heading]]", []string{"folder/N"}},
+		{"folder+heading+alias", "see [[folder/N#h|alias]]", []string{"folder/N"}},
 		{"multiple", "[[Beta]] and [[Delta]]", []string{"Beta", "Delta"}},
 		{"none", "no links here", nil},
 	}
