@@ -1,7 +1,10 @@
-import { FileSystemAdapter, Plugin } from "obsidian";
+import { existsSync } from "fs";
+import { join } from "path";
+import { FileSystemAdapter, Notice, Plugin } from "obsidian";
 import { GraphMcpSettingTab, defaultSettings, type PluginSettings } from "./settings";
 import { ProcessManager } from "./process-manager";
 import { ReindexWatcher } from "./reindex-watcher";
+import { downloadBinary, isSupportedPlatform } from "./downloader";
 
 export default class GraphMcpPlugin extends Plugin {
   settings!: PluginSettings;
@@ -15,7 +18,10 @@ export default class GraphMcpPlugin extends Plugin {
     this.statusBarItem = this.addStatusBarItem();
 
     this.processManager = new ProcessManager({
-      getSettings: () => this.settings,
+      getSettings: () => ({
+        ...this.settings,
+        binaryPath: this.settings.binaryPath || this.managedBinaryPath(),
+      }),
       vaultPath: this.getVaultPath(),
       log: (line) => {
         console.log(`[graph-mcp] ${line}`);
@@ -64,9 +70,17 @@ export default class GraphMcpPlugin extends Plugin {
       callback: () => this.reindexNow(),
     });
 
-    if (this.settings.autoStart && this.settings.binaryPath) {
-      await this.processManager.start();
-      this.updateStatusBar();
+    this.updateStatusBar();
+
+    if (this.settings.autoStart) {
+      const effectivePath = this.settings.binaryPath || this.managedBinaryPath();
+      if (existsSync(effectivePath)) {
+        await this.processManager.start();
+        this.updateStatusBar();
+      } else if (!this.settings.binaryPath && isSupportedPlatform()) {
+        // No override set and managed binary missing — download then start.
+        this.autoDownloadBinary({ thenStart: true });
+      }
     }
   }
 
@@ -77,6 +91,39 @@ export default class GraphMcpPlugin extends Plugin {
 
   async reindexNow(): Promise<void> {
     await this.processManager.reindex();
+  }
+
+  managedBinaryPath(): string {
+    const adapter = this.app.vault.adapter;
+    if (!(adapter instanceof FileSystemAdapter)) {
+      throw new Error("graph-mcp requires the desktop file system adapter");
+    }
+    return join(
+      adapter.getBasePath(),
+      this.app.vault.configDir,
+      "plugins",
+      this.manifest.id,
+      "bin",
+      "obsidian-graph-mcp",
+    );
+  }
+
+  async autoDownloadBinary({ thenStart = false } = {}): Promise<void> {
+    const notice = new Notice("Graph MCP: downloading binary…", 0);
+    try {
+      await downloadBinary(this.manifest.version, this.managedBinaryPath());
+      notice.hide();
+      new Notice("Graph MCP: binary downloaded.");
+      if (thenStart && this.settings.autoStart) {
+        await this.processManager.start();
+        this.updateStatusBar();
+      }
+    } catch (err) {
+      notice.hide();
+      const msg = err instanceof Error ? err.message : String(err);
+      new Notice(`Graph MCP: download failed — ${msg}`, 8000);
+      console.error("[graph-mcp] binary download failed", err);
+    }
   }
 
   getVaultPath(): string {

@@ -47,15 +47,28 @@ export class GraphMcpSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("Binary path")
-      .setDesc("Absolute path to the obsidian-graph-mcp executable.")
+      .setDesc(
+        "Absolute path to the obsidian-graph-mcp executable. " +
+          "Leave blank to use the auto-downloaded binary (recommended).",
+      )
       .addText((text) =>
         text
-          .setPlaceholder("/usr/local/bin/obsidian-graph-mcp")
+          .setPlaceholder("leave blank to auto-download")
           .setValue(plugin.settings.binaryPath)
           .onChange(async (value) => {
             plugin.settings.binaryPath = value.trim();
             await plugin.saveSettings();
           }),
+      );
+
+    new Setting(containerEl)
+      .setName("Download / update binary")
+      .setDesc("Fetch the binary for this platform from the GitHub release matching the plugin version.")
+      .addButton((btn) =>
+        btn.setButtonText("Download").onClick(async () => {
+          await plugin.autoDownloadBinary();
+          this.display();
+        }),
       );
 
     new Setting(containerEl)
@@ -154,10 +167,6 @@ export class GraphMcpSettingTab extends PluginSettingTab {
       .setDesc(statusText)
       .addButton((btn) =>
         btn.setButtonText("Start").onClick(async () => {
-          if (!plugin.settings.binaryPath) {
-            new Notice("Set the binary path first.");
-            return;
-          }
           await plugin.processManager.start();
           this.display();
         }),
