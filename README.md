@@ -31,6 +31,46 @@ distinguishes "deliberately linked as provenance" from "incidentally mentioned i
 body". Frontmatter parsing takes only `[[wikilink]]` values (plain scalars like Jira
 IDs are ignored) and skips template placeholders (`[[<% ... %>]]`, `[[{{date}}]]`).
 
+## Frontmatter format
+
+Any frontmatter property whose value contains a `[[wikilink]]` becomes a typed
+edge in the graph. The lowercased property name is the edge type (`rel`).
+
+```yaml
+---
+title: "My Note"           # overrides the filename stem as the note's display title
+Origin: "[[Parent Project]]"
+References:
+  - "[[RFC 001]]"
+  - "[[Design Doc]]"
+  - PROJ-42                # plain text — not a wikilink, ignored
+tags: [go, architecture]   # indexed as tags, not as link targets
+---
+Body text with a [[casual mention]] and [[RFC 001]] again.
+```
+
+| Frontmatter | Result |
+|-------------|--------|
+| `Origin: "[[Parent Project]]"` | one edge: `rel=origin` → `Parent Project` |
+| `References:` block list | edges: `rel=references` → `RFC 001`, `Design Doc` |
+| `PROJ-42` in the list | ignored — no `[[…]]` |
+| `tags: [go, architecture]` | tags indexed; no link edges |
+| `[[RFC 001]]` in the body | separate edge: `rel=""` (body) → `RFC 001` |
+
+`RFC 001` ends up with **two** edges — one `references` and one body — because
+deduplication is per `(rel, target)` pair, not just target.
+
+**What is ignored:**
+- Plain-text scalars (`Jira: PLAT-2784`)
+- Template placeholders inside wikilinks: `[[<% tp.date.now() %>]]`, `[[{{date}}]]`
+- Wikilinks inside fenced code blocks or inline backticks
+
+**Naming conventions** — `Origin` and `References` are the idiomatic property
+names used by the `origin_chain` tool (follows `Origin` links to the root) and
+the `neighborhood` `rels` filter, but the parser gives no special treatment to
+any property name. You can use whatever names fit your vault; they simply
+become `rel` values on edges.
+
 ## Build & run
 
 ```sh
